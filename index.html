@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Vulnerability Dashboard (Version Aware)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial; margin:20px; background:#f5f7fa; }
+    .container { max-width:1100px; margin:auto; }
+    .card { background:white; padding:20px; margin-top:20px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1);}    
+    input, button { padding:10px; margin:5px; border-radius:5px; border:1px solid #ccc; }
+    button { background:#007bff; color:white; border:none; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px; border-bottom:1px solid #ddd; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Version-Aware Vulnerability Dashboard</h1>
+
+  <div class="card">
+    <input id="vendor" placeholder="Vendor (cisco / fortinet / palo alto)">
+    <input id="product" placeholder="Product (ftd / fortios / pan-os)">
+    <input id="version" placeholder="Version (e.g. 7.0.1)">
+    <button onclick="searchVulns()">Search</button>
+  </div>
+
+  <div class="card">
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>CVE</th><th>Severity</th><th>Match</th><th>Description</th></tr>
+      </thead>
+      <tbody id="results"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let chart;
+
+function versionCompare(v1, v2) {
+  const a = v1.split('.').map(Number);
+  const b = v2.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length,b.length); i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
+
+function isVersionAffected(cve, targetVersion) {
+  const nodes = cve.configurations?.nodes || [];
+
+  for (const node of nodes) {
+    for (const match of node.cpeMatch || []) {
+      const start = match.versionStartIncluding;
+      const end = match.versionEndExcluding;
+
+      if (!start && !end) return true; // no version info → assume affected
+
+      let ok = true;
+      if (start && versionCompare(targetVersion, start) < 0) ok = false;
+      if (end && versionCompare(targetVersion, end) >= 0) ok = false;
+
+      if (ok) return true;
+    }
+  }
+  return false;
+}
+
+async function searchVulns() {
+  const vendor = document.getElementById('vendor').value;
+  const product = document.getElementById('product').value;
+  const version = document.getElementById('version').value;
+
+  const query = `${vendor} ${product}`;
+  const url = `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${query}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  const results = document.getElementById('results');
+  results.innerHTML = '';
+
+  let counts = { Critical:0, High:0, Medium:0, Low:0 };
+
+  (data.vulnerabilities || []).slice(0,50).forEach(v => {
+    const cve = v.cve;
+
+    const affected = isVersionAffected(cve, version);
+    if (!affected) return;
+
+    let severity = 'Unknown';
+    if (cve.metrics?.cvssMetricV31) {
+      const score = cve.metrics.cvssMetricV31[0].cvssData.baseScore;
+      if (score >= 9) severity = 'Critical';
+      else if (score >= 7) severity = 'High';
+      else if (score >= 4) severity = 'Medium';
+      else severity = 'Low';
+    }
+
+    if (counts[severity] !== undefined) counts[severity]++;
+
+    results.innerHTML += `
+      <tr>
+        <td>${cve.id}</td>
+        <td>${severity}</td>
+        <td>✔</td>
+        <td>${cve.descriptions[0].value}</td>
+      </tr>`;
+  });
+
+  renderChart(counts);
+}
+
+function renderChart(counts) {
+  const ctx = document.getElementById('chart');
+  if (chart) chart.destroy();
+
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: Object.keys(counts),
+      datasets: [{ data: Object.values(counts) }]
+    }
+  });
+}
+</script>
+
+</body>
+</html>
